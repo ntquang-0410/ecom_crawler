@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ps aux *)",
+      "Read(//home/ntquang0410/.cache/ms-playwright/**)",
+      "Bash(cat /tmp/playwright_install.log 2>/dev/null; echo \"---\"; ls -la ~/.cache/ms-playwright/.links 2>/dev/null)",
+      "Read(//tmp/**)"
+    ]
+  }
+}

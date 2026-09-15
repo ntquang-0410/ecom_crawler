@@ -1,0 +1,20 @@
+# Secrets & credentials — NEVER commit these.
+.env
+*.env
+!.env.example
+firebase-credentials.json
+*serviceAccountKey*.json
+# Firebase Admin SDK's default download naming convention
+# (e.g. ecom-crawler-70461-firebase-adminsdk-fbsvc-xxxxxxxxxx.json).
+*firebase-adminsdk*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local data artifacts
+*.parquet
+/tmp_batches/
+.DS_Store

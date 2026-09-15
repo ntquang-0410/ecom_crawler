@@ -1,0 +1,9 @@
+{
+  "rules": {
+    "queue": {
+      ".indexOn": ["status"],
+      ".read": false,
+      ".write": false
+    }
+  }
+}
