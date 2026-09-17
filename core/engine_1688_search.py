@@ -93,6 +93,11 @@ class Search1688Engine(BaseCrawlerEngine, Browser1688Session):
         await self._open_home(page)
         return page
 
+    async def close(self) -> None:
+        # BaseCrawlerEngine.close() (a no-op) comes first in the MRO and would
+        # otherwise shadow the browser shutdown.
+        await Browser1688Session.close(self)
+
     async def _open_home(self, page: Page) -> None:
         """Load the home page and wait until `lib.mtop` is usable."""
         await self.goto_through_walls(page, HOME_URL)

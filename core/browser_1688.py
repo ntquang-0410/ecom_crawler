@@ -80,18 +80,32 @@ class Browser1688Session:
             extra_http_headers={"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5"},
             args=["--disable-blink-features=AutomationControlled"],
         )
-        try:
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                str(self.profile_dir), channel="chrome", **launch_kwargs
-            )
-        except Exception as exc:
-            logger.warning(
-                "Real Chrome not available (%s); falling back to bundled Chromium, "
-                "which Alibaba's anti-bot is very likely to block.",
-                exc,
-            )
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                str(self.profile_dir), **launch_kwargs
+        self._context = None
+        for attempt in range(1, 6):
+            try:
+                self._context = await self._playwright.chromium.launch_persistent_context(
+                    str(self.profile_dir), channel="chrome", **launch_kwargs
+                )
+                break
+            except Exception as exc:
+                if "existing browser session" in str(exc):
+                    # A previous Chrome on this profile (e.g. the search
+                    # engine that just closed) has not released its lock yet.
+                    logger.warning("Profile still locked by another Chrome (attempt %s/5); retrying in 5s", attempt)
+                    await asyncio.sleep(5)
+                    continue
+                logger.warning(
+                    "Real Chrome not available (%s); falling back to bundled Chromium, "
+                    "which Alibaba's anti-bot is very likely to block.",
+                    exc,
+                )
+                self._context = await self._playwright.chromium.launch_persistent_context(
+                    str(self.profile_dir), **launch_kwargs
+                )
+                break
+        if self._context is None:
+            raise RuntimeError(
+                f"Chrome profile {self.profile_dir} is in use by another Chrome. Close it and retry."
             )
         await self._context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
@@ -108,7 +122,7 @@ class Browser1688Session:
             await self._playwright.stop()
             self._playwright = None
 
-    async def force_language(self) -> None:
+    async def force_language(self, lang: Optional[str] = None) -> None:
         """1688 picks the content language (seller's Chinese, or its own
         machine translation) from the `oversealanguage` cookie, and resets
         that cookie from the account's overseas profile on every page load.
@@ -116,7 +130,7 @@ class Browser1688Session:
         simply pinned before each call/navigation."""
         assert self._context is not None
         await self._context.add_cookies(
-            [{"name": "oversealanguage", "value": self.site_language, "domain": ".1688.com", "path": "/"}]
+            [{"name": "oversealanguage", "value": lang or self.site_language, "domain": ".1688.com", "path": "/"}]
         )
 
     # ------------------------------------------------------------------ #

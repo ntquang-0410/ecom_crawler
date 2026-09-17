@@ -1,9 +1,12 @@
 """
-Seed the Central Queue with 1688 product detail URLs, taken from the
-product ids already collected by the search crawl (data/raw/1688_zh_*.jsonl).
+Seed the detail queue with 1688 product pages, taken from the product ids
+collected by the search stage (data/raw/1688search_zh_*.jsonl).
 
-Products whose attributes were already crawled (data/raw/1688detail_*.jsonl)
-are skipped, so the script can be re-run after every search pass.
+Each queue item carries the product's search-result fields (price, sales,
+province, city, biz_type, shop, keyword, search_url...) so the detail row is
+self-contained. Products already present in a detail shard
+(1688_bilingual_*.jsonl / 1688_mono_zh_*.jsonl) are skipped, so the script
+can be re-run after every search pass.
 
 Usage:
     python scripts/seed_1688_details.py                       # everything new
@@ -18,7 +21,7 @@ import random
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Set
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
@@ -26,11 +29,14 @@ from config import load_settings  # noqa: E402
 from core.queue_manager import QueueManager  # noqa: E402
 
 DETAIL_URL = "https://detail.1688.com/offer/{pid}.html"
+SEARCH_PREFIX = "1688search_zh_"
+DETAIL_PREFIXES = ("1688_bilingual_", "1688_mono_zh_")
+CARRIED_META = ("keyword", "page", "search_url", "price", "sales", "province", "city", "biz_type", "shop", "is_ad")
 
 
-def load_ids(raw_dir: Path, prefix: str) -> Dict[str, str]:
-    """product_id -> category, first occurrence wins."""
-    out: Dict[str, str] = {}
+def load_rows(raw_dir: Path, prefix: str) -> Dict[str, Dict[str, Any]]:
+    """product_id -> row, first occurrence wins."""
+    out: Dict[str, Dict[str, Any]] = {}
     for path in sorted(raw_dir.glob(f"{prefix}*.jsonl")):
         with path.open(encoding="utf-8") as f:
             for line in f:
@@ -40,38 +46,37 @@ def load_ids(raw_dir: Path, prefix: str) -> Dict[str, str]:
                     continue
                 pid = str(row.get("product_id") or "")
                 if pid and pid not in out:
-                    out[pid] = row.get("category") or "unknown"
+                    out[pid] = row
     return out
+
+
+def carried_meta(row: Dict[str, Any]) -> Dict[str, Any]:
+    meta = row.get("meta") or {}
+    return {k: meta.get(k) for k in CARRIED_META if meta.get(k) is not None}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Seed the queue with 1688 detail pages.")
     ap.add_argument("--per-category", type=int, default=0, help="cap per category (0 = all)")
     ap.add_argument("--seed", type=int, default=42, help="random seed for the per-category sample")
-    ap.add_argument(
-        "--ids-from",
-        help="only products present in this JSONL (e.g. a 1688detail_vi file, to crawl the same ids in zh)",
-    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     settings = load_settings()
     raw_dir = Path(settings.raw_data_dir)
-    titles = load_ids(raw_dir, "1688_zh_")
-    if args.ids_from:
-        wanted = set(load_ids(Path(args.ids_from).parent, Path(args.ids_from).stem))
-        titles = {pid: cat for pid, cat in titles.items() if pid in wanted}
-        print(f"restricted to {len(titles)} ids from {args.ids_from}")
-    done: Set[str] = set(load_ids(raw_dir, f"1688detail_{settings.site_language}_"))
-    pending = {pid: cat for pid, cat in titles.items() if pid not in done}
+    found = load_rows(raw_dir, SEARCH_PREFIX)
+    done: Set[str] = set()
+    for prefix in DETAIL_PREFIXES:
+        done |= set(load_rows(raw_dir, prefix))
+    pending = {pid: row for pid, row in found.items() if pid not in done}
     print(
-        f"products with titles: {len(titles)} | already detailed in '{settings.site_language}': "
-        f"{len(done)} | new: {len(pending)} | queue path: {settings.firebase_queue_path}"
+        f"products from search: {len(found)} | already detailed: {len(done)} | "
+        f"new: {len(pending)} | queue path: {settings.firebase_queue_path}"
     )
 
     by_category: Dict[str, List[str]] = defaultdict(list)
-    for pid, cat in pending.items():
-        by_category[cat].append(pid)
+    for pid, row in pending.items():
+        by_category[row.get("category") or "unknown"].append(pid)
 
     rng = random.Random(args.seed)
     queue_manager = None
@@ -80,9 +85,10 @@ def main() -> None:
         if args.per_category and len(pids) > args.per_category:
             pids = rng.sample(pids, args.per_category)
         urls = [DETAIL_URL.format(pid=pid) for pid in pids]
+        metas = [carried_meta(pending[pid]) for pid in pids]
         if args.dry_run:
-            for url in urls[:3]:
-                print(f"{category}\t{url}")
+            for url, meta in list(zip(urls, metas))[:2]:
+                print(f"{category}\t{url}\t{meta}")
         else:
             if queue_manager is None:
                 queue_manager = QueueManager(
@@ -91,7 +97,7 @@ def main() -> None:
                     queue_path=settings.firebase_queue_path,
                     worker_id="seeder",
                 )
-            queue_manager.enqueue_urls(urls, category=category)
+            queue_manager.enqueue_urls(urls, category=category, metas=metas)
         total += len(urls)
         print(f"{category}: {len(urls)} detail pages")
 

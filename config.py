@@ -52,6 +52,8 @@ class Settings:
     hf_token: str = field(default_factory=lambda: _get_env("HF_TOKEN", required=True))
     hf_repo_id: str = field(default_factory=lambda: _get_env("HF_REPO_ID", required=True))
     hf_repo_type: str = field(default_factory=lambda: _get_env("HF_REPO_TYPE", "dataset"))
+    # Parquet mirror of each batch on the Hub (raw JSONL is written regardless).
+    hf_upload_enabled: bool = field(default_factory=lambda: _get_bool("HF_UPLOAD_ENABLED", True))
 
     # Firebase Realtime Database (Central Queue)
     firebase_cred_path: str = field(
@@ -61,7 +63,12 @@ class Settings:
         default_factory=lambda: _get_env("FIREBASE_DB_URL", required=True)
     )
     firebase_queue_path: str = field(
-        default_factory=lambda: _get_env("FIREBASE_QUEUE_PATH", "queue")
+        default_factory=lambda: _get_env("FIREBASE_QUEUE_PATH", "queue_search_zh")
+    )
+    # Registry of products the bilingual stage found without a Vietnamese
+    # version (their rows go to the mono_zh sink).
+    firebase_mono_queue_path: str = field(
+        default_factory=lambda: _get_env("FIREBASE_MONO_QUEUE_PATH", "queue_detail_zh")
     )
 
     # Crawler tuning
@@ -91,8 +98,9 @@ class Settings:
     detail_fetch_description: bool = field(
         default_factory=lambda: _get_bool("DETAIL_FETCH_DESCRIPTION", True)
     )
-    # Content language requested from 1688: "zh" = sellers' original Chinese
-    # (the corpus), "vi" = 1688's machine translation (silver data only).
+    # Content language requested from 1688: "zh" = sellers' original Chinese,
+    # "vi" = 1688's machine translation, "zh+vi" (detail engine only) = both
+    # in one pass, one bilingual row per product.
     site_language: str = field(default_factory=lambda: _get_env("SITE_LANGUAGE", "zh"))
     browser_profile_dir: str = field(
         default_factory=lambda: _get_env("BROWSER_PROFILE_DIR", ".pw_profile")
@@ -143,8 +151,10 @@ class Settings:
                 f"CRAWLER_ENGINE '{self.crawler_engine}' is not recognized. "
                 f"Expected 'aiohttp', 'playwright', '1688_search' or '1688_detail'."
             )
-        if self.site_language not in {"zh", "vi"}:
-            raise ValueError(f"SITE_LANGUAGE '{self.site_language}' must be 'zh' or 'vi'.")
+        if self.site_language not in {"zh", "vi", "zh+vi"}:
+            raise ValueError(f"SITE_LANGUAGE '{self.site_language}' must be 'zh', 'vi' or 'zh+vi'.")
+        if self.site_language == "zh+vi" and self.crawler_engine != "1688_detail":
+            raise ValueError("SITE_LANGUAGE=zh+vi is only supported by CRAWLER_ENGINE=1688_detail.")
         if "/" not in self.hf_repo_id or self.hf_repo_id.startswith(("git@", "http")):
             raise ValueError(
                 f"HF_REPO_ID '{self.hf_repo_id}' must be a plain '<user>/<name>' id, "

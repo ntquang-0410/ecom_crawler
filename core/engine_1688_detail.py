@@ -1,17 +1,26 @@
 """
-Detail1688Engine: collects product attributes (商品属性) and any description
-text from 1688 product detail pages.
+Detail1688Engine: one row per product from 1688 detail pages, in Chinese and
+-- when 1688 has a translation -- Vietnamese, fetched in the same pass.
 
-Each queue item is one detail URL (`https://detail.1688.com/offer/<id>.html`).
-The engine opens the first one by navigation, then fetches the rest with
+Each queue item is one detail URL (`https://detail.1688.com/offer/<id>.html`)
+plus the search-result fields the seeder attached (`QueueItem.meta`). The
+engine opens the first URL by navigation, then fetches the rest with
 `fetch()` from inside that page: same-origin, same cookies, same TLS and
 browser fingerprint, but no JavaScript execution per product -- the
 server-rendered HTML already carries the attribute JSON the parser reads.
 If a fetch comes back as the anti-bot stub, it falls back to a real
 navigation for that item.
 
-The long description (详情描述) lives on a CDN with no anti-bot in front, so
-it is fetched from Python directly; it is nearly always images only.
+Bilingual mode (`site_language="zh+vi"`), per product:
+  1. pin `oversealanguage=vi`, fetch. If the page is Chinese, the product is
+     outside 1688's cross-border pool: that page *is* the Chinese page and
+     the row is monolingual (`meta.has_vi=False`). Done in one request.
+  2. otherwise pin `oversealanguage=zh`, fetch again, and build the row from
+     both pages (attributes aligned by fid).
+
+The long description (详情描述) lives on a CDN with no anti-bot in front; it
+is images with, sometimes, seller boilerplate text, and only exists in
+Chinese. Whatever text it has is kept as `meta.description_extra_zh`.
 """
 from __future__ import annotations
 
@@ -33,7 +42,7 @@ from core.browser_1688 import (
     texts_match_language,
 )
 from core.models import ProductRecord, QueueItem
-from parsers.parser_1688_detail import Detail1688Parser, description_from_cdn
+from parsers.parser_1688_detail import Detail1688Parser, DetailPage, description_from_cdn
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +69,12 @@ class Detail1688Engine(BaseCrawlerEngine, Browser1688Session):
         max_delay_seconds: float = 3.0,
         human_wait_seconds: int = 300,
         fetch_description: bool = True,
-        site_language: str = "zh",
+        site_language: str = "zh+vi",
     ) -> None:
+        self.bilingual = site_language == "zh+vi"
         Browser1688Session.__init__(
-            self, profile_dir, request_timeout_seconds, human_wait_seconds, site_language
+            self, profile_dir, request_timeout_seconds, human_wait_seconds,
+            "vi" if self.bilingual else site_language,
         )
         self.parser = parser
         self.worker_id = worker_id
@@ -73,7 +84,8 @@ class Detail1688Engine(BaseCrawlerEngine, Browser1688Session):
         self.fetch_description = fetch_description
         self._http: Optional[aiohttp.ClientSession] = None
         self._consecutive_wrong_language = 0
-        self._untranslated = 0
+        self.n_bilingual = 0
+        self.n_monolingual = 0
 
     async def _ensure_session(self, first_url: str) -> Page:
         if self._page is not None and not self._page.is_closed():
@@ -88,6 +100,7 @@ class Detail1688Engine(BaseCrawlerEngine, Browser1688Session):
             self._http = None
         await Browser1688Session.close(self)
 
+    # ------------------------------------------------------------------ #
     async def crawl_batch(
         self, items: List[QueueItem]
     ) -> Tuple[List[ProductRecord], List[QueueItem]]:
@@ -96,74 +109,104 @@ class Detail1688Engine(BaseCrawlerEngine, Browser1688Session):
 
         for item in items:
             await asyncio.sleep(random.uniform(self.min_delay_seconds, self.max_delay_seconds))
-            html = await self._fetch_with_retry(item.url)
-            if html is None:
-                failures.append(item)
-                continue
             try:
-                record = self.parser.parse(html, item, self.worker_id)
+                record = await self._crawl_bilingual(item) if self.bilingual else await self._crawl_mono(item)
+            except (WallNotClearedError, AccountLanguageError):
+                raise
             except Exception:
-                logger.exception("Parser raised for %s", item.url)
-                failures.append(item)
-                continue
+                logger.exception("Unexpected error on %s", item.url)
+                record = None
             if record is None:
                 failures.append(item)
                 continue
-            title = record.title_zh or record.title_vi
-            if not texts_match_language([title], self.site_language):
-                if self.site_language != "zh" and texts_match_language([title], "zh"):
-                    # 1688 only translates its cross-border pool; a domestic
-                    # product simply has no Vietnamese version. Not an error,
-                    # nothing to retry: the item is acknowledged without a record.
-                    self._untranslated += 1
-                    logger.info(
-                        "%s has no '%s' version (untranslated so far: %s)",
-                        item.url, self.site_language, self._untranslated,
-                    )
-                    # Keep a stub so the coverage gap is recorded and the
-                    # product is not re-seeded on the next run.
-                    record.title_vi = ""
-                    record.title_zh = ""
-                    record.meta = {"untranslated": True, "title_seen": title}
-                    successes.append(record)
-                else:
-                    self._consecutive_wrong_language += 1
-                    logger.warning(
-                        "%s came back in an unexpected language (%s in a row); releasing it",
-                        item.url, self._consecutive_wrong_language,
-                    )
-                    failures.append(item)
-                    if self._consecutive_wrong_language >= 5:
-                        raise AccountLanguageError(
-                            f"5 products in a row came back neither in '{self.site_language}' nor Chinese "
-                            "despite the pinned oversealanguage cookie. Check the account and restart."
-                        )
-                continue
-            self._consecutive_wrong_language = 0
             if self.fetch_description:
                 await self._add_description(record)
             successes.append(record)
 
         return successes, failures
 
-    async def _fetch_with_retry(self, url: str) -> Optional[str]:
+    async def _crawl_bilingual(self, item: QueueItem) -> Optional[ProductRecord]:
+        vi_page = await self._fetch_page(item.url, "vi")
+        if vi_page is None:
+            return None
+
+        if texts_match_language([vi_page.title], "vi"):
+            # Same pacing between the two fetches of one product as between
+            # products: two requests a second apart is what trips the slider.
+            await asyncio.sleep(random.uniform(self.min_delay_seconds, self.max_delay_seconds))
+            zh_page = await self._fetch_page(item.url, "zh")
+            if zh_page is None:
+                return None
+            if not texts_match_language([zh_page.title], "zh"):
+                return self._wrong_language(item, "zh", zh_page.title)
+            self._consecutive_wrong_language = 0
+            self.n_bilingual += 1
+            return self.parser.build(zh_page, vi_page, item, self.worker_id)
+
+        if texts_match_language([vi_page.title], "zh"):
+            # Not in the cross-border pool: 1688 served the Chinese page.
+            self._consecutive_wrong_language = 0
+            self.n_monolingual += 1
+            logger.info(
+                "%s has no Vietnamese version (bilingual so far: %s, monolingual: %s)",
+                item.url, self.n_bilingual, self.n_monolingual,
+            )
+            return self.parser.build(vi_page, None, item, self.worker_id)
+
+        return self._wrong_language(item, "vi/zh", vi_page.title)
+
+    async def _crawl_mono(self, item: QueueItem) -> Optional[ProductRecord]:
+        page = await self._fetch_page(item.url, self.site_language)
+        if page is None:
+            return None
+        if not texts_match_language([page.title], "zh"):
+            return self._wrong_language(item, "zh", page.title)
+        self._consecutive_wrong_language = 0
+        self.n_monolingual += 1
+        return self.parser.build(page, None, item, self.worker_id)
+
+    def _wrong_language(self, item: QueueItem, expected: str, title: str) -> None:
+        self._consecutive_wrong_language += 1
+        logger.warning(
+            "%s came back in an unexpected language (expected %s, got %r; %s in a row); releasing it",
+            item.url, expected, title[:60], self._consecutive_wrong_language,
+        )
+        if self._consecutive_wrong_language >= 5:
+            raise AccountLanguageError(
+                "5 products in a row came back in an unexpected language despite the pinned "
+                "oversealanguage cookie. Check the account and restart."
+            )
+        return None
+
+    # ------------------------------------------------------------------ #
+    async def _fetch_page(self, url: str, lang: str) -> Optional[DetailPage]:
+        html = await self._fetch_with_retry(url, lang)
+        if html is None:
+            return None
+        try:
+            return self.parser.parse_page(html, url)
+        except Exception:
+            logger.exception("Parser raised for %s (%s)", url, lang)
+            return None
+
+    async def _fetch_with_retry(self, url: str, lang: str) -> Optional[str]:
         delay = 2.0
         for attempt in range(1, self.max_fetch_attempts + 1):
             page = await self._ensure_session(url)
-            html = await self._fetch_in_page(page, url)
+            html = await self._fetch_in_page(page, url, lang)
             if html is None:
-                html = await self._fetch_by_navigation(page, url)
+                html = await self._fetch_by_navigation(page, url, lang)
             if html is not None:
                 return html
-            logger.warning("Detail fetch failed for %s (attempt %s/%s)", url, attempt, self.max_fetch_attempts)
+            logger.warning("Detail fetch failed for %s [%s] (attempt %s/%s)", url, lang, attempt, self.max_fetch_attempts)
             if attempt < self.max_fetch_attempts:
                 await asyncio.sleep(delay)
                 delay *= 2
-        logger.error("Giving up on %s after %s attempts", url, self.max_fetch_attempts)
+        logger.error("Giving up on %s [%s] after %s attempts", url, lang, self.max_fetch_attempts)
         return None
 
-    async def _fetch_in_page(self, page: Page, url: str) -> Optional[str]:
-        await self.force_language()
+    async def _fetch_in_page(self, page: Page, url: str, lang: str) -> Optional[str]:
+        await self.force_language(lang)
         try:
             res = await asyncio.wait_for(page.evaluate(_FETCH_JS, url), timeout=self.timeout_ms / 1000)
         except (PlaywrightTimeoutError, asyncio.TimeoutError):
@@ -181,7 +224,8 @@ class Detail1688Engine(BaseCrawlerEngine, Browser1688Session):
         )
         return None
 
-    async def _fetch_by_navigation(self, page: Page, url: str) -> Optional[str]:
+    async def _fetch_by_navigation(self, page: Page, url: str, lang: str) -> Optional[str]:
+        self.site_language = lang
         try:
             await self.goto_through_walls(page, url)
         except WallNotClearedError:
@@ -193,7 +237,9 @@ class Detail1688Engine(BaseCrawlerEngine, Browser1688Session):
         return html if len(html) >= _MIN_REAL_HTML else None
 
     async def _add_description(self, record: ProductRecord) -> None:
-        detail_url = record.meta.get("detail_url")
+        detail_url = record.meta.pop("detail_url", None)
+        record.meta["description_extra_zh"] = ""
+        record.meta["description_images"] = 0
         if not detail_url:
             return
         if self._http is None:
@@ -210,5 +256,5 @@ class Detail1688Engine(BaseCrawlerEngine, Browser1688Session):
             logger.info("Description CDN fetch failed for %s: %s", record.product_id, exc)
             return
         text, n_images = description_from_cdn(body)
-        record.meta["description_text"] = text
+        record.meta["description_extra_zh"] = text
         record.meta["description_images"] = n_images

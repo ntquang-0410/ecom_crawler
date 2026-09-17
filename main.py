@@ -22,7 +22,7 @@ from core.data_packager import DataPackager
 from core.hf_uploader import HuggingFaceUploader
 from core.queue_manager import QueueManager
 from core.raw_writer import RawJsonlWriter
-from core.worker import Worker
+from core.worker import Sink, Worker
 from parsers.generic_parser import GenericProductParser
 
 
@@ -108,34 +108,63 @@ def build_worker(settings: Settings) -> Worker:
 
     crawler_engine = build_crawler_engine(settings)
 
-    uploader = HuggingFaceUploader(
-        token=settings.hf_token,
-        repo_id=settings.hf_repo_id,
-        repo_type=settings.hf_repo_type,
-        max_retries=settings.max_upload_retries,
-        base_delay_seconds=settings.upload_base_delay_seconds,
-        max_delay_seconds=settings.upload_max_delay_seconds,
-    )
+    def make_sink(name: str, site: str, lang: str, upload: bool) -> Sink:
+        uploader = None
+        if upload:
+            uploader = HuggingFaceUploader(
+                token=settings.hf_token,
+                repo_id=settings.hf_repo_id,
+                repo_type=settings.hf_repo_type,
+                max_retries=settings.max_upload_retries,
+                base_delay_seconds=settings.upload_base_delay_seconds,
+                max_delay_seconds=settings.upload_max_delay_seconds,
+                source=name,
+            )
+        return Sink(
+            name=name,
+            raw_writer=RawJsonlWriter(
+                raw_dir=Path(settings.raw_data_dir),
+                site=site,
+                lang=lang,
+                worker_id=settings.worker_id,
+                shard_max_bytes=settings.raw_shard_max_mb * 1024 * 1024,
+            ),
+            packager=DataPackager(worker_id=settings.worker_id, batch_size=settings.batch_size),
+            uploader=uploader,
+        )
 
-    packager = DataPackager(worker_id=settings.worker_id, batch_size=settings.batch_size)
-
-    raw_site = {"1688_search": "1688", "1688_detail": "1688detail"}.get(settings.crawler_engine, "web")
-    raw_writer = RawJsonlWriter(
-        raw_dir=Path(settings.raw_data_dir),
-        site=raw_site,
-        lang=settings.site_language,
-        worker_id=settings.worker_id,
-        shard_max_bytes=settings.raw_shard_max_mb * 1024 * 1024,
-    )
+    # Where each stage's rows go (raw shard family / bronze folder on the Hub):
+    #   search        1688search_zh_*.jsonl   raw only (titles are an intermediate
+    #                                         product; the detail stage re-emits them)
+    #   detail zh+vi  1688_bilingual_*.jsonl  data/bronze/bilingual_zh_vi/
+    #                 1688_mono_zh_*.jsonl    data/bronze/mono_zh/
+    #   detail zh     1688_mono_zh_*.jsonl    data/bronze/mono_zh/
+    mono_registry = None
+    if settings.crawler_engine == "1688_detail" and settings.site_language == "zh+vi":
+        sinks = {
+            "bilingual": make_sink("bilingual_zh_vi", "1688", "bilingual", upload=settings.hf_upload_enabled),
+            "mono": make_sink("mono_zh", "1688", "mono_zh", upload=settings.hf_upload_enabled),
+        }
+        mono_registry = QueueManager(
+            cred_path=settings.firebase_cred_path,
+            db_url=settings.firebase_db_url,
+            queue_path=settings.firebase_mono_queue_path,
+            worker_id=settings.worker_id,
+        )
+    elif settings.crawler_engine == "1688_detail":
+        sinks = {"default": make_sink("mono_zh", "1688", "mono_zh", upload=settings.hf_upload_enabled)}
+    elif settings.crawler_engine == "1688_search":
+        sinks = {"default": make_sink("search_zh", "1688search", settings.site_language, upload=False)}
+    else:
+        sinks = {"default": make_sink("web", "web", settings.site_language, upload=settings.hf_upload_enabled)}
 
     return Worker(
         worker_id=settings.worker_id,
         queue_manager=queue_manager,
         crawler_engine=crawler_engine,
-        uploader=uploader,
-        packager=packager,
-        raw_writer=raw_writer,
+        sinks=sinks,
         claim_chunk_size=settings.claim_chunk_size,
+        mono_registry=mono_registry,
     )
 
 

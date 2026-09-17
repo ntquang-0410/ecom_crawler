@@ -110,18 +110,30 @@ class QueueManager:
     # ------------------------------------------------------------------ #
     # Producer-side helper (optional, useful for seeding the queue/tests)
     # ------------------------------------------------------------------ #
-    def enqueue_urls(self, urls: Iterable[str], category: str) -> int:
+    def enqueue_urls(
+        self,
+        urls: Iterable[str],
+        category: str,
+        metas: Optional[Iterable[Optional[Dict[str, Any]]]] = None,
+        status: str = STATUS_PENDING,
+    ) -> int:
+        """Push one node per URL. `metas` (parallel to `urls`) is stored on
+        the node and handed back inside `QueueItem.meta` when claimed."""
         count = 0
+        metas_iter = iter(metas) if metas is not None else None
         for url in urls:
+            meta = next(metas_iter, None) if metas_iter is not None else None
             new_item: Dict[str, Any] = {
                 "url": url,
                 "category": category,
-                "status": STATUS_PENDING,
+                "status": status,
                 "worker_id": None,
                 "attempts": 0,
                 "locked_at": None,
                 "updated_at": self._now_iso(),
             }
+            if meta:
+                new_item["meta"] = meta
             # firebase_admin's Reference.push(self, value='') has no type
             # annotation, so type checkers infer `str` from the '' default
             # and flag any JSON-serializable dict/list argument as an error.
@@ -130,6 +142,27 @@ class QueueManager:
             self.ref.push(new_item)  # type: ignore[arg-type]
             count += 1
         return count
+
+    def register_done(self, url: str, category: str, product_id: str) -> None:
+        """Record a product in this queue as already handled by this worker,
+        e.g. the monolingual registry (`queue_detail_zh`) fed by the bilingual
+        stage when a product turns out to have no Vietnamese version. Anyone
+        who later wants such products re-crawled resets their status to
+        `pending` and runs the corresponding stage."""
+        now = self._now_iso()
+        self.ref.push(  # type: ignore[arg-type]
+            {
+                "url": url,
+                "category": category,
+                "product_id": product_id,
+                "status": STATUS_DONE,
+                "worker_id": self.worker_id,
+                "attempts": 1,
+                "locked_at": None,
+                "finished_at": now,
+                "updated_at": now,
+            }
+        )
 
     # ------------------------------------------------------------------ #
     # Claiming (locking)
@@ -186,11 +219,13 @@ class QueueManager:
         if result.get("status") != STATUS_PROCESSING:
             return None
 
+        meta = result.get("meta")
         return QueueItem(
             key=key,
             url=result["url"],
             category=result.get("category", "unknown"),
             attempts=result.get("attempts", 0),
+            meta=meta if isinstance(meta, dict) else {},
         )
 
     # ------------------------------------------------------------------ #

@@ -30,6 +30,8 @@ class HuggingFaceUploader:
         max_retries: int = 6,
         base_delay_seconds: float = 2.0,
         max_delay_seconds: float = 120.0,
+        source: str = "web",
+        run_id: str | None = None,
     ) -> None:
         self.api = HfApi(token=token)
         self.repo_id = repo_id
@@ -37,15 +39,21 @@ class HuggingFaceUploader:
         self.max_retries = max_retries
         self.base_delay_seconds = base_delay_seconds
         self.max_delay_seconds = max_delay_seconds
+        # `source` is the bronze sub-folder ("bilingual_zh_vi", "mono_zh",
+        # "search_zh"); `run_id` keeps a restarted worker from overwriting
+        # the batches of its previous run (the batch counter starts at 1 in
+        # every process).
+        self.source = source
+        self.run_id = run_id or time.strftime("%Y%m%dT%H%M%S")
 
-    @staticmethod
-    def build_repo_path(worker_id: str, batch: PackagedBatch) -> str:
+    def build_repo_path(self, worker_id: str, batch: PackagedBatch) -> str:
         """Hive-style partitioned destination path, e.g.:
-        data/bronze/category=electronics/crawled_date=2026-09-15/worker_thanh_tai_batch_001.parquet
+        data/bronze/bilingual_zh_vi/category=electronics/crawled_date=2026-09-17/
+            worker_nhat_anh_20260917T171500_batch_001.parquet
         """
-        filename = f"{worker_id}_batch_{batch.batch_number:03d}.parquet"
+        filename = f"{worker_id}_{self.run_id}_batch_{batch.batch_number:03d}.parquet"
         return (
-            f"data/bronze/category={batch.category}/"
+            f"data/bronze/{self.source}/category={batch.category}/"
             f"crawled_date={batch.crawled_date}/{filename}"
         )
 
