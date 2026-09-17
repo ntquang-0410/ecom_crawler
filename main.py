@@ -13,12 +13,15 @@ import asyncio
 import logging
 import sys
 
+from pathlib import Path
+
 from config import Settings, load_settings
 from core.base_crawler_engine import BaseCrawlerEngine
 from core.crawler_engine import CrawlerEngine
 from core.data_packager import DataPackager
 from core.hf_uploader import HuggingFaceUploader
 from core.queue_manager import QueueManager
+from core.raw_writer import RawJsonlWriter
 from core.worker import Worker
 from parsers.generic_parser import GenericProductParser
 
@@ -32,6 +35,39 @@ def configure_logging(worker_id: str) -> None:
 
 
 def build_crawler_engine(settings: Settings) -> BaseCrawlerEngine:
+    if settings.crawler_engine == "1688_detail":
+        from core.engine_1688_detail import Detail1688Engine
+        from parsers.parser_1688_detail import Detail1688Parser
+
+        return Detail1688Engine(
+            parser=Detail1688Parser(lang=settings.site_language),
+            worker_id=settings.worker_id,
+            profile_dir=Path(settings.browser_profile_dir),
+            request_timeout_seconds=settings.request_timeout_seconds,
+            max_fetch_attempts=settings.max_crawl_attempts,
+            min_delay_seconds=settings.playwright_min_delay_seconds,
+            max_delay_seconds=settings.playwright_max_delay_seconds,
+            human_wait_seconds=settings.human_wait_seconds,
+            fetch_description=settings.detail_fetch_description,
+            site_language=settings.site_language,
+        )
+
+    if settings.crawler_engine == "1688_search":
+        from core.engine_1688_search import Search1688Engine
+        from parsers.parser_1688_search import Search1688Parser
+
+        return Search1688Engine(
+            parser=Search1688Parser(lang=settings.site_language),
+            worker_id=settings.worker_id,
+            profile_dir=Path(settings.browser_profile_dir),
+            request_timeout_seconds=settings.request_timeout_seconds,
+            max_fetch_attempts=settings.max_crawl_attempts,
+            min_delay_seconds=settings.playwright_min_delay_seconds,
+            max_delay_seconds=settings.playwright_max_delay_seconds,
+            human_wait_seconds=settings.human_wait_seconds,
+            site_language=settings.site_language,
+        )
+
     parser = GenericProductParser()
 
     if settings.crawler_engine == "playwright":
@@ -83,12 +119,22 @@ def build_worker(settings: Settings) -> Worker:
 
     packager = DataPackager(worker_id=settings.worker_id, batch_size=settings.batch_size)
 
+    raw_site = {"1688_search": "1688", "1688_detail": "1688detail"}.get(settings.crawler_engine, "web")
+    raw_writer = RawJsonlWriter(
+        raw_dir=Path(settings.raw_data_dir),
+        site=raw_site,
+        lang=settings.site_language,
+        worker_id=settings.worker_id,
+        shard_max_bytes=settings.raw_shard_max_mb * 1024 * 1024,
+    )
+
     return Worker(
         worker_id=settings.worker_id,
         queue_manager=queue_manager,
         crawler_engine=crawler_engine,
         uploader=uploader,
         packager=packager,
+        raw_writer=raw_writer,
         claim_chunk_size=settings.claim_chunk_size,
     )
 

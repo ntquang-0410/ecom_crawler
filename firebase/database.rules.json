@@ -1,6 +1,6 @@
-{
+﻿{
   "rules": {
-    "queue": {
+    "$queue": {
       ".indexOn": ["status"],
       ".read": false,
       ".write": false

@@ -13,6 +13,7 @@ import hashlib
 import logging
 import re
 from typing import Dict, Optional
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
@@ -47,12 +48,12 @@ class GenericProductParser(BaseProductParser):
 
         return ProductRecord(
             product_id=product_id,
-            title=clean_text(title),
-            description=clean_text(description),
-            specs=specs,
+            title_zh=clean_text(title),
             category=item.category,
-            source_url=item.url,
-            worker_id=worker_id,
+            source_site=urlparse(item.url).hostname or "unknown",
+            url=item.url,
+            worker=worker_id,
+            meta={"description": clean_text(description), "specs": specs},
             queue_key=item.key,
         )
 

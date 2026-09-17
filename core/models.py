@@ -18,33 +18,37 @@ class QueueItem:
 
 @dataclass
 class ProductRecord:
-    """A cleaned product ready to be packaged into a parquet batch."""
+    """One product title, ready for the raw JSONL log and the parquet batch.
+
+    Schema follows CLAUDE.md section 4. `meta` holds site-specific extras
+    (price, sales, shop, keyword...) so the core columns stay stable across
+    sites while nothing useful from the source is thrown away.
+    """
 
     product_id: str
-    title: str
-    description: str
-    specs: Dict[str, Any] = field(default_factory=dict)
-    category: str = "unknown"
-    source_url: str = ""
-    worker_id: str = ""
-    crawled_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    title_zh: str
+    category: str
+    source_site: str
+    url: str
+    worker: str
+    # Filled instead of `title_zh` when the site is crawled in Vietnamese
+    # (1688's own machine translation; see README "Ngôn ngữ").
+    title_vi: str = ""
+    meta: Dict[str, Any] = field(default_factory=dict)
+    crawl_time: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )
     queue_key: Optional[str] = None  # links back to the QueueItem that produced it
 
     def to_row(self) -> Dict[str, Any]:
-        """Flat dict for DataFrame construction. `specs` is JSON-serialized to
-        keep the parquet schema stable across products with heterogeneous
-        spec keys (arbitrary/variable dict shapes break columnar inference)."""
-        import json
-
         return {
             "product_id": self.product_id,
-            "title": self.title,
-            "description": self.description,
-            "specs": json.dumps(self.specs, ensure_ascii=False),
+            "title_zh": self.title_zh,
+            "title_vi": self.title_vi,
             "category": self.category,
-            "source_url": self.source_url,
-            "worker_id": self.worker_id,
-            "crawled_at": self.crawled_at,
+            "source_site": self.source_site,
+            "url": self.url,
+            "crawl_time": self.crawl_time,
+            "worker": self.worker,
+            "meta": self.meta,
         }

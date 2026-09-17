@@ -6,9 +6,11 @@ from typing import List
 
 from core.base_crawler_engine import BaseCrawlerEngine
 from core.data_packager import DataPackager, PackagedBatch
+from core.browser_1688 import AccountLanguageError, WallNotClearedError
 from core.hf_uploader import HuggingFaceUploader
 from core.models import QueueItem
 from core.queue_manager import QueueManager
+from core.raw_writer import RawJsonlWriter
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ class Worker:
         crawler_engine: BaseCrawlerEngine,
         uploader: HuggingFaceUploader,
         packager: DataPackager,
+        raw_writer: RawJsonlWriter,
         claim_chunk_size: int = 50,
         idle_poll_seconds: float = 5.0,
     ) -> None:
@@ -29,6 +32,7 @@ class Worker:
         self.crawler_engine = crawler_engine
         self.uploader = uploader
         self.packager = packager
+        self.raw_writer = raw_writer
         self.claim_chunk_size = claim_chunk_size
         self.idle_poll_seconds = idle_poll_seconds
 
@@ -73,6 +77,9 @@ class Worker:
                     await self._flush_if_any(force=False)
                     consecutive_errors = 0
 
+                except (WallNotClearedError, AccountLanguageError) as exc:
+                    logger.critical("Worker %s stopping: %s", self.worker_id, exc)
+                    raise
                 except Exception:
                     consecutive_errors += 1
                     if consecutive_errors > max_consecutive_errors:
@@ -105,14 +112,27 @@ class Worker:
         products, failures = await self.crawler_engine.crawl_batch(items)
 
         if products:
+            # Raw log first: once this returns the data survives an upload
+            # failure or a crash further down the pipeline.
+            await asyncio.to_thread(self.raw_writer.append, products)
             self.packager.add(products)
             logger.info(
-                "Crawled %s/%s products successfully (buffer=%s/%s)",
+                "Crawled %s records from %s queue items (buffer=%s/%s)",
                 len(products),
                 len(items),
                 self.packager.pending_count,
                 self.packager.batch_size,
             )
+
+        # The raw JSONL is the source of truth, so every item that fetched
+        # fine is acknowledged right here. The Hugging Face upload below is
+        # only a mirror: its failure must never send pages back to the
+        # queue, which would re-spend the site's rate budget on data we
+        # already hold.
+        failed_keys = {item.key for item in failures}
+        for item in items:
+            if item.key not in failed_keys:
+                await asyncio.to_thread(self.queue_manager.mark_done, item.key)
 
         for item in failures:
             await asyncio.to_thread(self.queue_manager.release, item.key)
@@ -124,30 +144,25 @@ class Worker:
             batch = self.packager.pop_batch(force=force)
             if batch is None:
                 return
-            await self._upload_and_ack(batch)
+            await self._upload(batch)
 
-    async def _upload_and_ack(self, batch: PackagedBatch) -> None:
+    async def _upload(self, batch: PackagedBatch) -> None:
         success = await asyncio.to_thread(
             self.uploader.upload_with_backoff, batch, self.worker_id
         )
 
         if success:
-            for key in batch.queue_keys:
-                await asyncio.to_thread(self.queue_manager.mark_done, key)
             logger.info(
-                "Batch %s acknowledged as done (%s products).",
-                batch.batch_number,
-                batch.record_count,
+                "Batch %s uploaded (%s products).", batch.batch_number, batch.record_count
             )
+            self._cleanup_temp_file(batch)
         else:
-            for key in batch.queue_keys:
-                await asyncio.to_thread(self.queue_manager.release, key)
             logger.error(
-                "Batch %s upload failed after retries; released %s URLs back to queue.",
+                "Batch %s upload failed after retries; parquet kept at %s for a manual "
+                "re-upload (data is also in the raw JSONL).",
                 batch.batch_number,
-                len(batch.queue_keys),
+                batch.local_path,
             )
-        self._cleanup_temp_file(batch)
 
     @staticmethod
     def _cleanup_temp_file(batch: PackagedBatch) -> None:

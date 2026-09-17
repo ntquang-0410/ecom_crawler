@@ -197,7 +197,7 @@ class QueueManager:
     # Acknowledgement
     # ------------------------------------------------------------------ #
     def mark_done(self, key: str) -> None:
-        """Only call this AFTER the Hugging Face upload has succeeded."""
+        """Only call this AFTER the item's records are safely on disk (raw JSONL)."""
         self.ref.child(key).update(
             {
                 "status": STATUS_DONE,

@@ -78,12 +78,32 @@ class Settings:
         default_factory=lambda: _get_env("DEFAULT_CATEGORY", "electronics")
     )
 
-    # Crawler engine selection: "aiohttp" (default, lightweight HTTP client)
-    # or "playwright" (real headless Chromium -- for sites that require JS
-    # rendering or block plain HTTP clients via bot-detection).
+    # Crawler engine selection:
+    #   "aiohttp"      lightweight HTTP client (blocked by Alibaba's anti-bot)
+    #   "playwright"   bundled headless Chromium (also blocked by Alibaba)
+    #   "1688_search"  real Chrome with a persistent profile calling 1688's
+    #                  search API (titles, 60 per queue item)
+    #   "1688_detail"  same browser, product detail pages (attributes,
+    #                  description) -- one product per queue item
     crawler_engine: str = field(
-        default_factory=lambda: _get_env("CRAWLER_ENGINE", "aiohttp")
+        default_factory=lambda: _get_env("CRAWLER_ENGINE", "1688_search")
     )
+    detail_fetch_description: bool = field(
+        default_factory=lambda: _get_bool("DETAIL_FETCH_DESCRIPTION", True)
+    )
+    # Content language requested from 1688: "zh" = sellers' original Chinese
+    # (the corpus), "vi" = 1688's machine translation (silver data only).
+    site_language: str = field(default_factory=lambda: _get_env("SITE_LANGUAGE", "zh"))
+    browser_profile_dir: str = field(
+        default_factory=lambda: _get_env("BROWSER_PROFILE_DIR", ".pw_profile")
+    )
+    # How long to wait for a person to solve a CAPTCHA / log in before the
+    # worker gives up and stops.
+    human_wait_seconds: int = field(default_factory=lambda: _get_int("HUMAN_WAIT_SECONDS", 300))
+
+    # Raw, append-only JSONL output (CLAUDE.md section 4)
+    raw_data_dir: str = field(default_factory=lambda: _get_env("RAW_DATA_DIR", "data/raw"))
+    raw_shard_max_mb: int = field(default_factory=lambda: _get_int("RAW_SHARD_MAX_MB", 200))
     playwright_headless: bool = field(
         default_factory=lambda: _get_bool("PLAYWRIGHT_HEADLESS", True)
     )
@@ -118,10 +138,17 @@ class Settings:
                 f"WORKER_ID '{self.worker_id}' is not recognized. "
                 f"Expected one of: {sorted(VALID_WORKER_IDS)}"
             )
-        if self.crawler_engine not in {"aiohttp", "playwright"}:
+        if self.crawler_engine not in {"aiohttp", "playwright", "1688_search", "1688_detail"}:
             raise ValueError(
                 f"CRAWLER_ENGINE '{self.crawler_engine}' is not recognized. "
-                f"Expected 'aiohttp' or 'playwright'."
+                f"Expected 'aiohttp', 'playwright', '1688_search' or '1688_detail'."
+            )
+        if self.site_language not in {"zh", "vi"}:
+            raise ValueError(f"SITE_LANGUAGE '{self.site_language}' must be 'zh' or 'vi'.")
+        if "/" not in self.hf_repo_id or self.hf_repo_id.startswith(("git@", "http")):
+            raise ValueError(
+                f"HF_REPO_ID '{self.hf_repo_id}' must be a plain '<user>/<name>' id, "
+                f"not a git/ssh URL."
             )
         if not Path(self.firebase_cred_path).is_file():
             raise FileNotFoundError(

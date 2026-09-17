@@ -17,4 +17,8 @@ venv/
 # Local data artifacts
 *.parquet
 /tmp_batches/
+/data/
 .DS_Store
+
+# Browser profile (holds logged-in 1688/Taobao session cookies)
+.pw_profile*/

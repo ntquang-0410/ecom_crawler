@@ -4,6 +4,7 @@ batches to local `.parquet` files, ready for HuggingFaceUploader.
 """
 from __future__ import annotations
 
+import json
 import logging
 import tempfile
 import uuid
@@ -24,7 +25,6 @@ class PackagedBatch:
     category: str
     crawled_date: str
     batch_number: int
-    queue_keys: List[str]
     record_count: int
 
 
@@ -67,11 +67,13 @@ class DataPackager:
         self._batch_counter += 1
 
         df = pd.DataFrame([r.to_row() for r in chunk])
+        # Variable dict shapes break columnar inference; store as a JSON string.
+        df["meta"] = df["meta"].map(lambda m: json.dumps(m, ensure_ascii=False))
 
         # Category/date are assumed uniform per batch (a worker typically
         # drains one category/day at a time); use the majority values.
         category = chunk[0].category if chunk else "unknown"
-        crawled_date = chunk[0].crawled_at[:10] if chunk else ""
+        crawled_date = chunk[0].crawl_time[:10] if chunk else ""
 
         filename = f"{self.worker_id}_batch_{self._batch_counter:03d}_{uuid.uuid4().hex[:8]}.parquet"
         local_path = self.tmp_dir / filename
@@ -84,6 +86,5 @@ class DataPackager:
             category=category,
             crawled_date=crawled_date,
             batch_number=self._batch_counter,
-            queue_keys=[r.queue_key for r in chunk if r.queue_key],
             record_count=len(chunk),
         )
