@@ -122,30 +122,38 @@ class Worker:
             # normally or a fatal error propagated out above.
             await self.crawler_engine.close()
 
-    def _route(self, record: ProductRecord) -> Sink:
+    def _route(self, record: ProductRecord) -> str:
+        """Key into `self.sinks` for this record."""
         if "bilingual" in self.sinks and "mono" in self.sinks:
-            return self.sinks["bilingual" if record.has_vi else "mono"]
-        return self.sinks["default"]
+            return "bilingual" if record.has_vi else "mono"
+        return "default"
 
     async def _crawl_and_buffer(self, items: List[QueueItem]) -> None:
         products, failures = await self.crawler_engine.crawl_batch(items)
 
         if products:
             routed: Dict[str, List[ProductRecord]] = {}
-            for record in products:
-                normalize_record(record)
-                routed.setdefault(self._route(record).name, []).append(record)
-            # Raw log first: once this returns the data survives an upload
-            # failure or a crash further down the pipeline.
-            for name, records in routed.items():
-                sink = self.sinks[name]
-                await asyncio.to_thread(sink.raw_writer.append, records)
-                sink.packager.add(records)
+            try:
+                for record in products:
+                    normalize_record(record)
+                    routed.setdefault(self._route(record), []).append(record)
+                # Raw log first: once this returns the data survives an upload
+                # failure or a crash further down the pipeline.
+                for key, records in routed.items():
+                    sink = self.sinks[key]
+                    await asyncio.to_thread(sink.raw_writer.append, records)
+                    sink.packager.add(records)
+            except Exception:
+                # Nothing was acknowledged yet: hand every item back so the
+                # crawl is not lost behind a 30-minute stale-lock wait.
+                for item in items:
+                    await asyncio.to_thread(self.queue_manager.release, item.key)
+                raise
             logger.info(
                 "Crawled %s records from %s queue items (%s)",
                 len(products),
                 len(items),
-                ", ".join(f"{n}={len(r)}" for n, r in routed.items()),
+                ", ".join(f"{self.sinks[k].name}={len(r)}" for k, r in routed.items()),
             )
             if self.mono_registry is not None:
                 for record in routed.get("mono", []):
