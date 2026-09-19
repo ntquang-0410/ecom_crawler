@@ -8,6 +8,16 @@ auto-converted viewer table with the ~73k title-only search rows.
 
 Safe to run anytime, including while a crawl is in progress: it only reads
 the local data/raw/*.jsonl files and overwrites two parquet files on the Hub.
+
+`meta` is un-nested into real typed columns (price, sales, province,
+category_1688...) instead of staying a JSON string: data/raw/ keeps meta as
+JSON because search-stage and detail-stage rows have different meta keys and
+Parquet needs one fixed schema per column, but this snapshot only ever holds
+detail-stage rows, whose meta keys are identical across every row (verified:
+all 20 keys present in 100% of rows), so there is no reason to keep it
+opaque here. `attributes_zh`/`attributes_vi` stay nested (list of
+{name, values}) since their length varies per product; pandas/pyarrow read
+that natively as a column of Python lists, no json.loads() needed either.
 """
 from __future__ import annotations
 
@@ -22,6 +32,17 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from config import load_settings  # noqa: E402
 
+# Scalar meta fields promoted to top-level columns; the rest (attributes_zh/vi,
+# nested lists) are merged in as-is by pd.json_normalize.
+_META_COLUMNS = [
+    "price", "sales", "province", "city", "biz_type", "shop", "is_ad",
+    "category_1688", "category_id_1688", "has_vi",
+    "n_attributes_zh", "n_attributes_vi", "n_attributes_aligned",
+    "attributes_zh", "attributes_vi",
+    "description_extra_zh", "description_images",
+    "keyword", "search_url",
+]
+
 
 def load_rows(raw_dir: Path, prefix: str) -> pd.DataFrame:
     rows = []
@@ -29,10 +50,11 @@ def load_rows(raw_dir: Path, prefix: str) -> pd.DataFrame:
         with path.open(encoding="utf-8") as f:
             for line in f:
                 rows.append(json.loads(line))
+    if not rows:
+        return pd.DataFrame()
     df = pd.DataFrame(rows)
-    if not df.empty:
-        df["meta"] = df["meta"].map(lambda m: json.dumps(m, ensure_ascii=False))
-    return df
+    meta_df = pd.json_normalize(df.pop("meta")).reindex(columns=_META_COLUMNS)
+    return pd.concat([df, meta_df], axis=1)
 
 
 def main() -> None:
