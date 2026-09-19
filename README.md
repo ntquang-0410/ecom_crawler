@@ -10,6 +10,32 @@ người bán Trung Quốc tự viết; bản tiếng Việt là **máy dịch c
 các sản phẩm thuộc pool xuyên biên giới (~55-60% sản phẩm). Phần "详情描述" của
 1688 là ảnh, không có bản dịch, nên không nằm trong kho ngữ liệu.
 
+## Cập nhật 19/09/2026 — đọc trước khi pull
+
+Nếu máy bạn đang crawl bằng nhánh cũ (trước ngày này), pull lại rồi đọc mục
+này trước khi chạy tiếp — nhiều thứ đã đổi:
+
+- **Crawl lại song ngữ trong 1 lượt**, không phải zh trước vi sau nữa. Mỗi
+  dòng có cả `title_zh`/`title_vi` và `description_zh`/`description_vi`
+  (bảng thuộc tính + SKU, ghép theo `fid`). Xem mục 1.
+- **Queue đổi tên**: `queue` → `queue_search_zh`, `queue_detail` →
+  `queue_detail_bi` (+ `queue_detail_zh` là sổ sản phẩm không có bản Việt).
+  Code cũ trỏ tên queue cũ sẽ không nhận việc — **đừng chạy script/nhánh cũ**.
+- **Đã chốt phạm vi 8 category**: `fashion, electronics, shoes, bags, beauty,
+  mother_baby, food, home`, trần **2.500 sản phẩm/category** (`bags` đã đủ).
+  Bỏ `auto, office, sports` (ít tiêu biểu cho TMĐT xuyên biên giới hơn) —
+  phần `auto` đã crawl (1.701 dòng) vẫn giữ làm dữ liệu bổ sung, không xoá.
+  **Đừng seed thêm category ngoài 8 cái này.** Chi tiết: mục 7.
+- **`data/raw/` cũ (`1688_zh_*`, `1688detail_*`) đã bỏ** — đổi tên thành
+  `1688search_zh_*` / `1688_bilingual_*` / `1688_mono_zh_*`. Dữ liệu cũ (nếu
+  máy bạn còn) không tương thích schema mới, không dùng lại được.
+- Data trên HF: `data/snapshot/*.parquet` là bảng sạch để **xem** (mọi cột
+  đã tách, không phải JSON string) — mục 8. `data/raw/`, `data/bronze/` trên
+  HF chỉ là bản sao lưu thô, không dùng để xem/phân tích.
+- **1 profile Chrome chỉ chạy được 1 worker.** Nếu Stop-Process worker cũ rồi
+  chạy lại ngay, đợi vài giây cho Chrome thoát hẳn, không thì lỗi
+  "profile already in use".
+
 ## 1. Kiến trúc và luồng dữ liệu
 
 ```
@@ -149,15 +175,62 @@ python scripts/run_pipeline.py search detail                         # mọi má
 
 Runner chạy `main.py` cho từng giai đoạn đến khi queue cạn, tự khởi động lại
 worker khi nó thoát (CAPTCHA không ai kéo, rớt mạng), tự seed `queue_detail_bi`
-từ raw tìm kiếm khi sang giai đoạn detail (`--per-category N` để giới hạn), và
-mirror raw JSONL lên HF sau mỗi giai đoạn. Cửa sổ Chrome hiện ra và tự chạy;
-nếu log in ra `CAPTCHA / LOGIN WALL`, kéo slider trong cửa sổ đó.
+từ raw tìm kiếm khi sang giai đoạn detail, và mirror raw JSONL lên HF sau mỗi
+giai đoạn. Cửa sổ Chrome hiện ra và tự chạy; nếu log ra `CAPTCHA / LOGIN WALL`,
+kéo slider trong cửa sổ đó.
+
+Trên Windows, `run_crawl.bat` gói sẵn lệnh trên (giai đoạn detail, delay 6-10s)
+để chạy trong cửa sổ PowerShell riêng, không phụ thuộc VS Code/Claude — bấm
+đúp hoặc `cd ecom_crawler; .\run_crawl.bat`. Đóng cửa sổ đó là dừng crawl,
+dữ liệu đã ghi không mất, chạy lại là tiếp tục.
 
 Nếu queue tìm kiếm bị mất: `python scripts/reseed_1688_search.py keywords_1688.txt`
 dựng lại từ raw, không crawl trùng. Một profile Chrome không chạy được hai engine
 cùng lúc; ba máy thì chia nhau queue, không chia giai đoạn.
 
-## 8. Việc còn lại
+### Phạm vi 8 category, trần 2.500/category
+
+`queue_detail_bi` đã được cắt (19/09) chỉ còn 8 category:
+`fashion, electronics, shoes, bags, beauty, mother_baby, food, home`, tối đa
+2.500 sản phẩm/category (`bags` đã vượt trần, không cần thêm). Ai seed lại từ
+đầu hoặc thêm từ khoá mới thì chạy lại để giữ đúng trần, đừng để queue phình
+lại như cũ (từng lên tới 65k item do 2 máy seed trùng):
+
+```bash
+python scripts/cap_queue_by_category.py --dry-run   # xem trước sẽ xoá gì
+python scripts/cap_queue_by_category.py              # xoá pending thừa, không đụng done/processing
+```
+
+`dedupe_queue.py` xử lý một vấn đề khác (cùng 1 URL bị seed 2 lần do 2 máy
+seed từ raw riêng) — chạy nếu nghi ngờ có trùng, không phải quy trình thường
+xuyên.
+
+## 8. Xem dữ liệu / đồng bộ lên Hugging Face
+
+`data/raw/` (log thô, mọi lần ghi) là nguồn sự thật, nhưng lẫn cả dòng tìm
+kiếm (chỉ tiêu đề) với dòng chi tiết (song ngữ đầy đủ) và không phải cột
+kiểu dữ liệu chuẩn — **không dùng để xem hay phân tích**. Dùng snapshot:
+
+```bash
+python scripts/mirror_raw_to_hf.py     # sao lưu data/raw/*.jsonl lên HF (an toàn dữ liệu)
+python scripts/snapshot_to_hf.py       # gộp thành 2 bảng sạch để xem/phân tích
+```
+
+`snapshot_to_hf.py` đọc toàn bộ `1688_bilingual_*`/`1688_mono_zh_*` cục bộ,
+tách `meta` thành cột kiểu dữ liệu thật (`price` float, `sales`/`n_attributes_*`
+int, `has_vi`/`is_ad` bool, `province`/`shop`/`category_1688` string — lọc/sort
+được ngay, không cần `json.loads`), rồi ghi đè lên:
+
+- `data/snapshot/bilingual_zh_vi.parquet` — sản phẩm có cả 2 ngôn ngữ.
+- `data/snapshot/mono_zh.parquet` — sản phẩm chỉ có tiếng Trung.
+
+Hai file này hiện trên [trang HF](https://huggingface.co/datasets/ntquang0410/zh-vie_ecom)
+ở tab **Files and versions** (bấm vào file là xem được bảng luôn, không cần
+đợi Dataset Viewer tự build — viewer tự động hay gộp lẫn cả 73k dòng tìm kiếm
+vào 1 bảng chung, không nên dùng). Chạy 2 lệnh trên sau mỗi lần dừng crawl dài
+(không bắt buộc mỗi lô nhỏ) để mọi người xem được dữ liệu mới nhất.
+
+## 9. Việc còn lại
 
 - `data/processed/`: lọc đuôi số lạ trong bản dịch (`Không.2`), dedup MinHash,
   tách dev/test theo `product_id`; không đụng `data/raw/`.
