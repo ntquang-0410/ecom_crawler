@@ -4,9 +4,17 @@ collected by the search stage (data/raw/1688search_zh_*.jsonl).
 
 Each queue item carries the product's search-result fields (price, sales,
 province, city, biz_type, shop, keyword, search_url...) so the detail row is
-self-contained. Products already present in a detail shard
-(1688_bilingual_*.jsonl / 1688_mono_zh_*.jsonl) are skipped, so the script
-can be re-run after every search pass.
+self-contained.
+
+A product is skipped if it is already present in a LOCAL detail shard
+(1688_bilingual_*.jsonl / 1688_mono_zh_*.jsonl) -- OR already has a node in
+`--queue` (any status: pending/processing/done/failed), fetched fresh from
+Firebase every run. The Firebase check is what matters on a multi-machine
+team: local files only see what THIS machine crawled, so checking local
+files alone re-enqueues everything another machine already has (this
+happened on 19/09 -- two machines each seeded from their own raw/, producing
+~11k duplicate queue items). Re-running this script is safe now regardless
+of which machine already seeded what.
 
 Usage:
     python scripts/seed_1688_details.py                       # everything new
@@ -65,13 +73,30 @@ def main() -> None:
     settings = load_settings()
     raw_dir = Path(settings.raw_data_dir)
     found = load_rows(raw_dir, SEARCH_PREFIX)
+
     done: Set[str] = set()
     for prefix in DETAIL_PREFIXES:
         done |= set(load_rows(raw_dir, prefix))
-    pending = {pid: row for pid, row in found.items() if pid not in done}
+    print(f"already detailed (local raw on this machine only): {len(done)}")
+
+    queue_manager = QueueManager(
+        cred_path=settings.firebase_cred_path,
+        db_url=settings.firebase_db_url,
+        queue_path=settings.firebase_queue_path,
+        worker_id="seeder",
+    )
+    existing_items = queue_manager.ref.get() or {}
+    queued_urls = {v.get("url") for v in existing_items.values() if isinstance(v, dict)}
+    print(f"already queued in '{settings.firebase_queue_path}' (any status, any machine): {len(queued_urls)}")
+
+    pending = {
+        pid: row
+        for pid, row in found.items()
+        if pid not in done and DETAIL_URL.format(pid=pid) not in queued_urls
+    }
     print(
-        f"products from search: {len(found)} | already detailed: {len(done)} | "
-        f"new: {len(pending)} | queue path: {settings.firebase_queue_path}"
+        f"products from search: {len(found)} | already detailed or queued: "
+        f"{len(found) - len(pending)} | new: {len(pending)}"
     )
 
     by_category: Dict[str, List[str]] = defaultdict(list)
@@ -79,7 +104,6 @@ def main() -> None:
         by_category[row.get("category") or "unknown"].append(pid)
 
     rng = random.Random(args.seed)
-    queue_manager = None
     total = 0
     for category, pids in sorted(by_category.items()):
         if args.per_category and len(pids) > args.per_category:
@@ -90,13 +114,6 @@ def main() -> None:
             for url, meta in list(zip(urls, metas))[:2]:
                 print(f"{category}\t{url}\t{meta}")
         else:
-            if queue_manager is None:
-                queue_manager = QueueManager(
-                    cred_path=settings.firebase_cred_path,
-                    db_url=settings.firebase_db_url,
-                    queue_path=settings.firebase_queue_path,
-                    worker_id="seeder",
-                )
             queue_manager.enqueue_urls(urls, category=category, metas=metas)
         total += len(urls)
         print(f"{category}: {len(urls)} detail pages")
