@@ -41,16 +41,6 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from config import load_settings  # noqa: E402
 
-# Scalar meta fields promoted to top-level columns; the rest (attributes_zh/vi,
-# nested lists) are merged in as-is by pd.json_normalize.
-_META_COLUMNS = [
-    "price", "sales", "province", "city", "biz_type", "shop", "is_ad",
-    "category_1688", "category_id_1688", "has_vi",
-    "n_attributes_zh", "n_attributes_vi", "n_attributes_aligned",
-    "attributes_zh", "attributes_vi",
-    "description_extra_zh", "description_images",
-    "keyword", "search_url",
-]
 
 
 def load_rows_from_hub(api: HfApi, repo_id: str, repo_type: str, token: str, prefix: str) -> pd.DataFrame:
@@ -77,7 +67,12 @@ def load_rows_from_hub(api: HfApi, repo_id: str, repo_type: str, token: str, pre
     df = df.drop_duplicates(subset="product_id", keep="first")
     if len(df) != before:
         print(f"  {prefix}*: dropped {before - len(df)} duplicate product_id rows")
-    meta_df = pd.json_normalize(df.pop("meta")).reindex(columns=_META_COLUMNS)
+    # No fixed column whitelist here on purpose: a hardcoded list silently
+    # drops any meta key it forgets (this happened -- "page" went missing
+    # from the snapshot while staying in the raw JSONL, caught by worker_huy).
+    # json_normalize instead picks up every key actually present, so the
+    # snapshot can never lag behind the real schema again.
+    meta_df = pd.json_normalize(df.pop("meta"))
     return pd.concat([df.reset_index(drop=True), meta_df.reset_index(drop=True)], axis=1)
 
 
