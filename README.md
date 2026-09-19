@@ -10,31 +10,36 @@ người bán Trung Quốc tự viết; bản tiếng Việt là **máy dịch c
 các sản phẩm thuộc pool xuyên biên giới (~55-60% sản phẩm). Phần "详情描述" của
 1688 là ảnh, không có bản dịch, nên không nằm trong kho ngữ liệu.
 
-## Cập nhật 19/09/2026 — đọc trước khi pull
+## Lịch sử thay đổi gần đây
 
-Nếu máy bạn đang crawl bằng nhánh cũ (trước ngày này), pull lại rồi đọc mục
-này trước khi chạy tiếp — nhiều thứ đã đổi:
+**17/09 (đã 2 ngày, Huy đang chạy bản này từ sáng 18/09)** — viết lại toàn
+bộ crawler sang song ngữ 1 lượt:
 
-- **Crawl lại song ngữ trong 1 lượt**, không phải zh trước vi sau nữa. Mỗi
-  dòng có cả `title_zh`/`title_vi` và `description_zh`/`description_vi`
-  (bảng thuộc tính + SKU, ghép theo `fid`). Xem mục 1.
-- **Queue đổi tên**: `queue` → `queue_search_zh`, `queue_detail` →
-  `queue_detail_bi` (+ `queue_detail_zh` là sổ sản phẩm không có bản Việt).
-  Code cũ trỏ tên queue cũ sẽ không nhận việc — **đừng chạy script/nhánh cũ**.
-- **Đã chốt phạm vi 8 category**: `fashion, electronics, shoes, bags, beauty,
+- Mỗi dòng có cả `title_zh`/`title_vi` và `description_zh`/`description_vi`
+  (bảng thuộc tính + SKU, ghép theo `fid`), không còn crawl zh trước vi sau.
+  Xem mục 1.
+- Kéo theo: **queue đổi tên** (`queue`→`queue_search_zh`,
+  `queue_detail`→`queue_detail_bi` + `queue_detail_zh` là sổ sản phẩm không
+  có bản Việt) và **file raw đổi tên** (`1688_zh_*`/`1688detail_*` →
+  `1688search_zh_*`/`1688_bilingual_*`/`1688_mono_zh_*`) — đây không phải 2
+  thay đổi riêng, chỉ là hệ quả bắt buộc của việc đổi schema. Dữ liệu crawl
+  bằng bản trước ngày này không tương thích, không dùng lại được.
+- Nếu máy ai đó **vẫn còn chạy nhánh cũ hơn ngày này** (không phải trường
+  hợp của Huy) thì cần pull lại — code cũ trỏ tên queue cũ sẽ không nhận
+  được việc gì cả.
+
+**19/09 (hôm nay, 2 việc độc lập, không đụng code crawl ở trên):**
+
+- **Chốt phạm vi 8 category**: `fashion, electronics, shoes, bags, beauty,
   mother_baby, food, home`, trần **2.500 sản phẩm/category** (`bags` đã đủ).
   Bỏ `auto, office, sports` (ít tiêu biểu cho TMĐT xuyên biên giới hơn) —
   phần `auto` đã crawl (1.701 dòng) vẫn giữ làm dữ liệu bổ sung, không xoá.
+  Chỉ xoá bớt `pending` trong Firebase, **không sửa gì trong engine crawl**.
   **Đừng seed thêm category ngoài 8 cái này.** Chi tiết: mục 7.
-- **`data/raw/` cũ (`1688_zh_*`, `1688detail_*`) đã bỏ** — đổi tên thành
-  `1688search_zh_*` / `1688_bilingual_*` / `1688_mono_zh_*`. Dữ liệu cũ (nếu
-  máy bạn còn) không tương thích schema mới, không dùng lại được.
-- Data trên HF: `data/snapshot/*.parquet` là bảng sạch để **xem** (mọi cột
-  đã tách, không phải JSON string) — mục 8. `data/raw/`, `data/bronze/` trên
-  HF chỉ là bản sao lưu thô, không dùng để xem/phân tích.
-- **1 profile Chrome chỉ chạy được 1 worker.** Nếu Stop-Process worker cũ rồi
-  chạy lại ngay, đợi vài giây cho Chrome thoát hẳn, không thì lỗi
-  "profile already in use".
+- **Cách xem dữ liệu đúng**: `data/snapshot/*.parquet` trên HF là bảng sạch
+  để xem (đọc theo schema có từ 17/09, mọi cột `meta` đã tách ra, không phải
+  JSON string) — mục 8. `data/raw/`, `data/bronze/` trên HF chỉ là bản sao
+  lưu thô, không dùng để xem/phân tích.
 
 ## 1. Kiến trúc và luồng dữ liệu
 
