@@ -6,5 +6,5 @@ set PYTHONIOENCODING=utf-8
 set REQUEST_TIMEOUT_SECONDS=90
 set HUMAN_WAIT_SECONDS=900
 title 1688 crawler - worker_nhat_anh
-.venv\Scripts\python.exe -u scripts\run_pipeline.py detail --min-delay 6 --max-delay 10
+.venv\Scripts\python.exe -u scripts\run_pipeline.py detail --min-delay 4 --max-delay 7
 pause
