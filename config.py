@@ -92,6 +92,8 @@ class Settings:
     #                  search API (titles, 60 per queue item)
     #   "1688_detail"  same browser, product detail pages (attributes,
     #                  description) -- one product per queue item
+    #   "tiki_detail"  Tiki's public JSON API (no browser, no anti-bot) --
+    #                  monolingual Vietnamese back-translation corpus
     crawler_engine: str = field(
         default_factory=lambda: _get_env("CRAWLER_ENGINE", "1688_search")
     )
@@ -146,10 +148,10 @@ class Settings:
                 f"WORKER_ID '{self.worker_id}' is not recognized. "
                 f"Expected one of: {sorted(VALID_WORKER_IDS)}"
             )
-        if self.crawler_engine not in {"aiohttp", "playwright", "1688_search", "1688_detail"}:
+        if self.crawler_engine not in {"aiohttp", "playwright", "1688_search", "1688_detail", "tiki_detail"}:
             raise ValueError(
                 f"CRAWLER_ENGINE '{self.crawler_engine}' is not recognized. "
-                f"Expected 'aiohttp', 'playwright', '1688_search' or '1688_detail'."
+                f"Expected 'aiohttp', 'playwright', '1688_search', '1688_detail' or 'tiki_detail'."
             )
         if self.site_language not in {"zh", "vi", "zh+vi"}:
             raise ValueError(f"SITE_LANGUAGE '{self.site_language}' must be 'zh', 'vi' or 'zh+vi'.")

@@ -52,6 +52,17 @@ def build_crawler_engine(settings: Settings) -> BaseCrawlerEngine:
             site_language=settings.site_language,
         )
 
+    if settings.crawler_engine == "tiki_detail":
+        from core.engine_tiki_detail import DetailTikiEngine
+
+        return DetailTikiEngine(
+            worker_id=settings.worker_id,
+            request_timeout_seconds=settings.request_timeout_seconds,
+            max_fetch_attempts=settings.max_crawl_attempts,
+            min_delay_seconds=settings.playwright_min_delay_seconds,
+            max_delay_seconds=settings.playwright_max_delay_seconds,
+        )
+
     if settings.crawler_engine == "1688_search":
         from core.engine_1688_search import Search1688Engine
         from parsers.parser_1688_search import Search1688Parser
@@ -139,6 +150,9 @@ def build_worker(settings: Settings) -> Worker:
     #   detail zh+vi  1688_bilingual_*.jsonl  data/bronze/bilingual_zh_vi/
     #                 1688_mono_zh_*.jsonl    data/bronze/mono_zh/
     #   detail zh     1688_mono_zh_*.jsonl    data/bronze/mono_zh/
+    #   tiki_detail   tiki_mono_vi_*.jsonl    data/bronze/mono_vi/ (Vietnamese
+    #                                         back-translation corpus, no
+    #                                         Chinese side to align against)
     mono_registry = None
     if settings.crawler_engine == "1688_detail" and settings.site_language == "zh+vi":
         sinks = {
@@ -155,6 +169,8 @@ def build_worker(settings: Settings) -> Worker:
         sinks = {"default": make_sink("mono_zh", "1688", "mono_zh", upload=settings.hf_upload_enabled)}
     elif settings.crawler_engine == "1688_search":
         sinks = {"default": make_sink("search_zh", "1688search", settings.site_language, upload=False)}
+    elif settings.crawler_engine == "tiki_detail":
+        sinks = {"default": make_sink("tiki_vi", "tiki", "mono_vi", upload=settings.hf_upload_enabled)}
     else:
         sinks = {"default": make_sink("web", "web", settings.site_language, upload=settings.hf_upload_enabled)}
 

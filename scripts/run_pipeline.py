@@ -13,6 +13,12 @@ Stages:
              registry.
     mono     1688_detail in zh mode on whatever is *pending* in
              `queue_detail_zh` (normally nothing; for re-crawls).
+    tiki     seed `queue_tiki_detail` from Tiki's public listing API (6
+             categories that need a Vietnamese back-translation corpus:
+             electronics/auto/food/home/beauty/mother_baby -- fashion/bags/
+             shoes are covered by an existing Kaggle Tiki dataset instead),
+             then tiki_detail on it: one row per product, monolingual
+             Vietnamese, to data/bronze/mono_vi/.
 
 Each stage runs main.py until its queue has no pending/processing items,
 restarting the worker whenever it exits (a CAPTCHA nobody solved, a network
@@ -42,6 +48,9 @@ STAGES = {
     "search": {"queue": "queue_search_zh", "engine": "1688_search", "lang": "zh", "seed": None},
     "detail": {"queue": "queue_detail_bi", "engine": "1688_detail", "lang": "zh+vi", "seed": "details"},
     "mono": {"queue": "queue_detail_zh", "engine": "1688_detail", "lang": "zh", "seed": None},
+    # Vietnamese back-translation corpus (no Chinese side); seeded once from
+    # Tiki's listing API, then any machine's worker can drain the queue.
+    "tiki": {"queue": "queue_tiki_detail", "engine": "tiki_detail", "lang": "vi", "seed": "tiki"},
 }
 
 
@@ -85,8 +94,9 @@ def main() -> None:
         env = dict(base_env, FIREBASE_QUEUE_PATH=stage["queue"], CRAWLER_ENGINE=stage["engine"], SITE_LANGUAGE=stage["lang"])
         print(f"\n===== STAGE {name} =====", flush=True)
 
-        if stage["seed"] == "details":
-            seed_cmd = [PYTHON, "scripts/seed_1688_details.py"]
+        if stage["seed"] in ("details", "tiki"):
+            seed_script = "scripts/seed_1688_details.py" if stage["seed"] == "details" else "scripts/seed_tiki_details.py"
+            seed_cmd = [PYTHON, seed_script]
             if args.per_category:
                 seed_cmd += ["--per-category", str(args.per_category)]
             counts = queue_counts(settings, stage["queue"])

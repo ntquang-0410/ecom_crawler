@@ -210,7 +210,40 @@ python scripts/cap_queue_by_category.py              # xoá pending thừa, khô
 seed từ raw riêng) — chạy nếu nghi ngờ có trùng, không phải quy trình thường
 xuyên.
 
-## 8. Xem dữ liệu / đồng bộ lên Hugging Face
+## 8. Crawl bổ sung tiếng Việt tự nhiên (Tiki)
+
+Toàn bộ tiếng Việt trong `queue_detail_bi` là do 1688 tự dịch máy (có lỗi:
+"vỏ não", "Không.1"/"Không.2"...). Giai đoạn này crawl thêm câu tiếng Việt
+thật do người bán Tiki viết, dùng làm dữ liệu back-translation đúng lĩnh vực
+TMĐT cho 6 category có tỉ lệ song ngữ 1688 thấp nhất:
+`electronics, auto, food, home, beauty, mother_baby` (`fashion`, `bags`,
+`shoes` đã đủ nhờ bộ Kaggle Tiki fashion có sẵn, không cần crawl thêm).
+
+Khác 1688 hoàn toàn: Tiki có API JSON công khai
+(`tiki.vn/api/v2/products/{id}`), không cần đăng nhập, không có captcha —
+`core/tiki_client.py` gọi HTTP thường, không dùng Chrome/Playwright. Vì vậy
+3 máy chạy song song không tranh chấp gì với nhau lẫn với crawl 1688 (queue
+riêng `queue_tiki_detail`, `CRAWLER_ENGINE=tiki_detail`).
+
+```bash
+python scripts/seed_tiki_details.py --dry-run          # xem trước
+python scripts/seed_tiki_details.py --per-category 2200  # một người, một lần
+python scripts/run_pipeline.py tiki --per-category 2200   # mọi máy, song song thoải mái
+```
+
+`run_crawl_tiki.bat` gói sẵn lệnh trên (delay 1-2s, nhanh hơn 1688 nhiều vì
+không sợ chặn) để chạy trong cửa sổ riêng, độc lập VS Code/Claude.
+
+Dữ liệu ra `data/raw/tiki_mono_vi_*.jsonl` — schema giống hệt `1688_mono_zh_*`
+(cùng cột `product_id/title_vi/description_vi/category/meta`, `title_zh` và
+`description_zh` để trống) cộng thêm 2 trường Tiki không có ở 1688:
+`meta.description_prose_vi` (mô tả văn xuôi người bán tự viết — phần tiếng
+Việt tự nhiên nhất) và `meta.category_tiki`/`category_id_tiki`/
+`breadcrumb_tiki` (category thật của Tiki, vai trò như `category_1688`).
+`meta.currency = "VND"` (khác 1688 là CNY); `province/city/biz_type` luôn
+`null` vì Tiki không có các trường này.
+
+## 9. Xem dữ liệu / đồng bộ lên Hugging Face
 
 `data/raw/` (log thô, mọi lần ghi) là nguồn sự thật, nhưng lẫn cả dòng tìm
 kiếm (chỉ tiêu đề) với dòng chi tiết (song ngữ đầy đủ) và không phải cột
@@ -235,8 +268,9 @@ Hai file này hiện trên [trang HF](https://huggingface.co/datasets/ntquang041
 vào 1 bảng chung, không nên dùng). Chạy 2 lệnh trên sau mỗi lần dừng crawl dài
 (không bắt buộc mỗi lô nhỏ) để mọi người xem được dữ liệu mới nhất.
 
-## 9. Việc còn lại
+## 10. Việc còn lại
 
 - `data/processed/`: lọc đuôi số lạ trong bản dịch (`Không.2`), dedup MinHash,
   tách dev/test theo `product_id`; không đụng `data/raw/`.
-- Engine/parser cho tiếng Việt bản địa (Shopee/Tiki/Lazada) cắm vào cùng queue.
+- Đoạn thông báo thuế/VAT lặp lại cuối `meta.description_prose_vi` (Tiki, ~95%
+  sản phẩm) — lọc ở bước làm sạch, không sửa trong raw.
