@@ -6,10 +6,11 @@ stage finishing.
     python scripts/sync_loop.py                    # every 20 minutes
     python scripts/sync_loop.py --minutes 10
 
-Runs mirror_raw_to_hf.py (raw JSONL backup) then snapshot_to_hf.py (clean
-viewable parquet) in a loop until Ctrl+C. Meant to run in its own terminal
-window alongside run_crawl.bat -- independent processes, neither depends on
-the other, safe to start/stop anytime.
+Runs mirror_raw_to_hf.py (raw JSONL backup) then snapshot_to_hf.py and
+snapshot_tiki_to_hf.py (clean viewable parquet, one per corpus) in a loop
+until Ctrl+C. Meant to run in its own terminal window alongside
+run_crawl.bat / run_crawl_tiki.bat -- independent processes, neither
+depends on the other, safe to start/stop anytime.
 """
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ def main() -> None:
     while True:
         run("mirror_raw_to_hf.py")
         run("snapshot_to_hf.py")
+        run("snapshot_tiki_to_hf.py")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] sleeping {args.minutes} min...", flush=True)
         time.sleep(args.minutes * 60)
 
